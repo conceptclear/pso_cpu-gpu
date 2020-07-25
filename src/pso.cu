@@ -1,16 +1,4 @@
 #include "pso.h"
-#include "helper_cuda.h"
-#include <cuda_runtime.h>
-#include "device_launch_parameters.h"
-#include "curand_kernel.h"
-
-// function used in host could not be translated to the device
-// define a same function in device
-__device__ __inline__ float deviceFitnessFunction(float *x)
-{
-	float res = x[0] * pow(2.71828, -(x[0] * x[0] + x[1] * x[1]));
-	return res;
-}
 
 __global__ void setupCurandInit(curandState *state, unsigned long seed)
 {
@@ -33,7 +21,7 @@ __global__ void initPbestValue(float *pbest_, float *pbest_value_, int num_dimen
 	size_t stride = blockDim.x * gridDim.x;
 	while (thread_id < num_particles_)
 	{
-		pbest_value_[thread_id] = deviceFitnessFunction(pbest_ + thread_id * num_dimensions_);
+		pbest_value_[thread_id] = fitnessFunction(pbest_ + thread_id * num_dimensions_);
 		thread_id += stride;
 	}
 }
@@ -45,7 +33,7 @@ __global__ void updatePbest(float *position_, float *pbest_, float *pbest_value_
 
 	while (thread_id < num_particles_)
 	{
-		float temp_value = deviceFitnessFunction(position_ + num_dimensions_ * thread_id);
+		float temp_value = fitnessFunction(position_ + num_dimensions_ * thread_id);
 		if (temp_value < pbest_value_[thread_id])
 		{
 			for (int i = 0; i < num_dimensions_; i++)
@@ -84,49 +72,47 @@ __device__ __inline__ bool checkMin(float num_a, float num_b)
 
 //function to get gbest
 //refer to reduction algorithm
-template <unsigned int blockSize>
-__device__ void warpMin(volatile float *sdata, int blockdim, unsigned int tid, unsigned int thread_id, int num_particles_)
+__device__ void warpMin(volatile float *sdata, int blockdim, unsigned int tid, unsigned int thread_id, int num_particles_,  int blocksize)
 {
-	if (blockSize >= 64 && checkMin(sdata[tid + 32], sdata[tid]) && thread_id + 32 < num_particles_)
+	if (blocksize >= 64 && checkMin(sdata[tid + 32], sdata[tid]) && thread_id + 32 < num_particles_)
 	{
 		sdata[tid] = sdata[tid + 32];
 		sdata[tid + blockdim] = sdata[tid + blockdim + 32];
 	}
-	if (blockSize >= 32 && checkMin(sdata[tid + 16], sdata[tid]) && thread_id + 16 < num_particles_)
+	if (blocksize >= 32 && checkMin(sdata[tid + 16], sdata[tid]) && thread_id + 16 < num_particles_)
 	{
 		sdata[tid] = sdata[tid + 16];
 		sdata[tid + blockdim] = sdata[tid + blockdim + 16];
 	}
-	if (blockSize >= 16 && checkMin(sdata[tid + 8], sdata[tid]) && thread_id + 8 < num_particles_)
+	if (blocksize >= 16 && checkMin(sdata[tid + 8], sdata[tid]) && thread_id + 8 < num_particles_)
 	{
 		sdata[tid] = sdata[tid + 8];
 		sdata[tid + blockdim] = sdata[tid + blockdim + 8];
 	}
-	if (blockSize >= 8 && checkMin(sdata[tid + 4], sdata[tid]) && thread_id + 4 < num_particles_)
+	if (blocksize >= 8 && checkMin(sdata[tid + 4], sdata[tid]) && thread_id + 4 < num_particles_)
 	{
 		sdata[tid] = sdata[tid + 4];
 		sdata[tid + blockdim] = sdata[tid + blockdim + 4];
 	}
-	if (blockSize >= 4 && checkMin(sdata[tid + 2], sdata[tid]) && thread_id + 2 < num_particles_)
+	if (blocksize >= 4 && checkMin(sdata[tid + 2], sdata[tid]) && thread_id + 2 < num_particles_)
 	{
 		sdata[tid] = sdata[tid + 2];
 		sdata[tid + blockdim] = sdata[tid + blockdim + 2];
 	}
-	if (blockSize >= 2 && checkMin(sdata[tid + 1], sdata[tid]) && thread_id + 1 < num_particles_)
+	if (blocksize >= 2 && checkMin(sdata[tid + 1], sdata[tid]) && thread_id + 1 < num_particles_)
 	{
 		sdata[tid] = sdata[tid + 1];
 		sdata[tid + blockdim] = sdata[tid + blockdim + 1];
 	}
 }
 
-template <unsigned int blockSize>
-__global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int num_particles_, int num_dimensions_)
+__global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int num_particles_, int num_dimensions_, int blocksize)
 {
 	extern __shared__ float sdata[];
 	unsigned int tid = threadIdx.x;
 	unsigned int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
-	unsigned int i = blockIdx.x * (blockSize * 2) + tid;
-	unsigned int gridSize = blockSize * 2 * gridDim.x;
+	unsigned int i = blockIdx.x * (blocksize * 2) + tid;
+	unsigned int gridSize = blocksize * 2 * gridDim.x;
 	if (thread_id > num_particles_)
 		return;
 	sdata[tid] = pbest_value_[tid];
@@ -139,18 +125,18 @@ __global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int 
 			sdata[tid + blockDim.x] = i;
 		}
 
-		if (i + blockSize > num_particles_)
+		if (i + blocksize > num_particles_)
 			break;
 
-		if (checkMin(pbest_value_[i + blockSize], sdata[tid]))
+		if (checkMin(pbest_value_[i + blocksize], sdata[tid]))
 		{
-			sdata[tid] = pbest_value_[i + blockSize];
-			sdata[tid + blockDim.x] = i + blockSize;
+			sdata[tid] = pbest_value_[i + blocksize];
+			sdata[tid + blockDim.x] = i + blocksize;
 		}
 		i += gridSize;
 	}
 	__syncthreads();
-	if (blockSize >= 1024)
+	if (blocksize >= 1024)
 	{
 		if (tid < 512 && checkMin(sdata[tid + 512], sdata[tid]) && thread_id + 512 < num_particles_)
 		{
@@ -159,7 +145,7 @@ __global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int 
 		}
 		__syncthreads();
 	}
-	if (blockSize >= 512)
+	if (blocksize >= 512)
 	{
 		if (tid < 256 && checkMin(sdata[tid + 256], sdata[tid]) && thread_id + 256 < num_particles_)
 		{
@@ -168,7 +154,7 @@ __global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int 
 		}
 		__syncthreads();
 	}
-	if (blockSize >= 256)
+	if (blocksize >= 256)
 	{
 		if (tid < 128 && checkMin(sdata[tid + 128], sdata[tid]) && thread_id + 128 < num_particles_)
 		{
@@ -177,7 +163,7 @@ __global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int 
 		}
 		__syncthreads();
 	}
-	if (blockSize >= 128)
+	if (blocksize >= 128)
 	{
 		if (tid < 64 && checkMin(sdata[tid + 64], sdata[tid]) && thread_id + 64 < num_particles_)
 		{
@@ -187,11 +173,14 @@ __global__ void minGbest(float *pbest_value_, float *pbest_, float *gbest_, int 
 		__syncthreads();
 	}
 	if (tid < 32)
-		warpMin<blockSize>(sdata, blockDim.x, tid, thread_id, num_particles_);
+		warpMin(sdata, blockDim.x, tid, thread_id, num_particles_, blocksize);
 	if (tid == 0)
 	{
 		for (int i = 0; i < num_dimensions_; i++)
+		{
 			gbest_[i] = pbest_[i + (unsigned int)(sdata[blockDim.x]) * num_dimensions_];
+		}
+		//printf("gbest is %lf",*gbest_);
 	}
 }
 
@@ -272,7 +261,6 @@ void PSO::getResultCUDA()
 
 	//printPbest();
 	//printPbestValue();
-	//std::cout<<gbest_[0]<<" "<<gbest_[1]<<std::endl;
 	//std::cout<<num_particles_<<" "<<num_dimensions_<<std::endl;
 	//std::cout<<block_size_particle<<" "<<block_size_pbest<<" "<<min_grid_size_particle<<" "<<min_grid_size_pbest<<" "<<grid_size_particle<<" "<<grid_size_pbest<<std::endl;
 
@@ -294,48 +282,14 @@ void PSO::getResultCUDA()
 	initPbestValue<<<grid_size_pbest, block_size_pbest>>>(dev_pbest, dev_pbest_value, num_dimensions_, num_particles_);
 	cudaDeviceSynchronize();
 	setupCurandInit<<<grid_size_particle, block_size_particle>>>(dev_state, unsigned(time(NULL)));
+	cudaDeviceSynchronize();
 	for (int i = 0; i < max_iter_; i++)
 	{
 		updateParticle<<<grid_size_particle, block_size_particle>>>(dev_position, dev_velocity, dev_pbest, dev_gbest, omega_init_, omega_end_, c1_, c2_, max_velocity_, num_dimensions_, num_particles_, 0, max_iter_, dev_state);
 		cudaDeviceSynchronize();
 		updatePbest<<<grid_size_pbest, block_size_pbest>>>(dev_position, dev_pbest, dev_pbest_value, num_dimensions_, num_particles_);
 		cudaDeviceSynchronize();
-		switch (block_size_pbest)
-		{
-		case 1024:
-			minGbest<1024><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 512:
-			minGbest<512><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 256:
-			minGbest<256><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 128:
-			minGbest<128><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 64:
-			minGbest<64><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 32:
-			minGbest<32><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 16:
-			minGbest<16><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 8:
-			minGbest<8><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 4:
-			minGbest<4><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 2:
-			minGbest<2><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		case 1:
-			minGbest<1><<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_);
-			break;
-		}
+		minGbest<<<grid_size_pbest, block_size_pbest, sdatasize * 2>>>(dev_pbest_value, dev_pbest, dev_gbest, num_particles_, num_dimensions_, block_size_pbest);
 		cudaDeviceSynchronize();
 	}
 
@@ -362,5 +316,4 @@ void PSO::getResultCUDA()
 
 	//printPbest();
 	//printPbestValue();
-	//std::cout<<gbest_[0]<<" "<<gbest_[1]<<std::endl;
 }

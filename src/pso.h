@@ -4,6 +4,11 @@
 #include <ctime>
 #include <cstdlib>
 #include <iostream>
+#include "helper_cuda.h"
+#include <cuda_runtime.h>
+#include "device_launch_parameters.h"
+#include "curand_kernel.h"
+#include "optimization.h"
 
 class PSO
 {
@@ -74,7 +79,7 @@ public:
         max_stall_interations_ = max_stall_iterations;
     }
 
-    void getResult(float (*fitnessFunction)(float *));
+    void getResult();
     void printPbest();
     void printPbestValue();
     void printResult();
@@ -82,8 +87,8 @@ public:
 private:
     float getRandom();
     float getRandomRange(float low, float high);
-    void getResultCPU(float (*fitnessFunction)(float *));
-    void getResultCUDA();
+    void getResultCPU();
+    void getResultCUDA();   
     void init();
     void initWithoutInput();
     void initWithInput();

@@ -66,20 +66,19 @@ void PSO::initWithInput()
     }
 }
 
-void PSO::getResult(float (*fitnessFunction)(float *))
+void PSO::getResult()
 {
     if (use_cuda_)
     {
-        //hostfunction could not be delivered to CUDA
         getResultCUDA();
     }
     else
     {
-        getResultCPU(fitnessFunction);
+        getResultCPU();
     }
 }
 
-void PSO::getResultCPU(float (*fitnessFunction)(float *))
+void PSO::getResultCPU()
 {
     init();
     struct timeval t1,t2;
