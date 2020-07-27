@@ -9,12 +9,15 @@ FIND_PACKAGE(CUDA QUIET REQUIRED)
  
 SET(PSO_EXECUTABLE PSO)
 
+SET(CUDA_SEPARABLE_COMPILATION ON)
+
 SET(PSO_SRCS
   ./src/main.cpp
   ./src/pso.cpp
 )
 SET(CUDA_PSO_SRCS_CU
   ./src/pso.cu
+  ./src/optimization.cu
 )
 
 CUDA_ADD_EXECUTABLE(
